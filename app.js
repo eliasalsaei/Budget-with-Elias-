@@ -108,7 +108,7 @@
 
   let state = loadState();
   let saveFailed = false;
-  function save() {
+  function save({ sync = true } = {}) {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
       saveFailed = false;
@@ -116,6 +116,7 @@
       if (!saveFailed) toast('⚠️ Could not save — browser storage is unavailable');
       saveFailed = true;
     }
+    if (sync) window.BudgetSync?.push();
   }
 
   const ui = {
@@ -602,6 +603,7 @@
         <button class="link-btn" data-action="del-cat" data-id="${c.id}" title="Delete">🗑️</button>
       </div>`;
     return `
+      ${syncCard()}
       <div class="card">
         <div class="card-head"><h3 class="card-title">🗂️ Expense categories</h3><button class="btn btn-sm btn-expense" data-action="add-cat" data-type="expense">＋ Add</button></div>
         <div class="cat-manage">${catsOf('expense').map(catItem).join('')}</div>
@@ -617,7 +619,7 @@
         </div>
         <div class="card">
           <div class="card-head"><h3 class="card-title">💾 Backup & data</h3></div>
-          <p class="card-sub" style="margin-top:0">Your data is saved only in this browser. Download a backup regularly so you never lose it.</p>
+          <p class="card-sub" style="margin-top:0">${syncInfo().user ? 'Your data is synced to your account. A backup file is still handy for safekeeping.' : 'Without sign-in, your data is saved only in this browser. Download a backup regularly so you never lose it.'}</p>
           <div class="btn-row">
             <button class="btn btn-primary btn-sm" data-action="export-json">⬇️ Backup (JSON)</button>
             <button class="btn btn-sm" data-action="import-json">⬆️ Restore backup</button>
@@ -631,6 +633,58 @@
       <p class="card-sub" style="text-align:center">${state.transactions.length} transactions · ${state.debts.length} debts · ${state.categories.length} categories</p>`;
   }
 
+  // ---------- Cloud sync UI ----------
+  const SYNC_LABELS = {
+    loading: ['⏳', 'Starting sync…'],
+    signedout: ['☁️', 'Sign in to sync'],
+    connecting: ['🔄', 'Connecting…'],
+    waiting: ['📴', 'Waiting for internet'],
+    syncing: ['🔄', 'Syncing…'],
+    synced: ['✅', 'Synced'],
+    offline: ['📴', 'Offline: will sync'],
+    error: ['⚠️', 'Sync problem'],
+    unavailable: ['📴', 'Sync unavailable'],
+  };
+  const syncInfo = () => window.BudgetSync?.info || { status: syncUnavailable ? 'unavailable' : 'loading', user: null, error: '' };
+  let syncUnavailable = false;
+
+  function renderSyncBadge() {
+    const info = syncInfo();
+    const [ico, label] = SYNC_LABELS[info.status] || SYNC_LABELS.loading;
+    const el = $('#syncBadge');
+    el.className = `sync-badge is-${info.status}`;
+    el.innerHTML = `<span>${ico}</span><span class="sync-text">${label}</span>`;
+    el.title = info.error || label;
+  }
+
+  function syncCard() {
+    const info = syncInfo();
+    const [ico, label] = SYNC_LABELS[info.status] || SYNC_LABELS.loading;
+    const u = info.user;
+    const body = u ? `
+      <div class="sync-user">
+        ${u.photo ? `<img class="avatar" src="${esc(u.photo)}" alt="" referrerpolicy="no-referrer">` : `<span class="avatar" style="background:var(--primary)">${esc((u.name || u.email || '?')[0].toUpperCase())}</span>`}
+        <div style="min-width:0;flex:1">
+          <div class="debt-name">${esc(u.name || 'Signed in')}</div>
+          <div class="card-sub" style="overflow:hidden;text-overflow:ellipsis">${esc(u.email)}</div>
+        </div>
+        <button class="btn btn-sm" data-action="sync-signout">Sign out</button>
+      </div>
+      <p class="card-sub" style="margin-bottom:0">Everything you add here appears on every phone or computer where you sign in with this account, and changes made offline sync when you're back online.</p>`
+      : `
+      <p class="card-sub" style="margin-top:0">Sign in with Google to back up your data and keep it the same on every phone and computer you use.</p>
+      <button class="btn btn-primary" data-action="sync-signin" ${['loading', 'unavailable', 'connecting'].includes(info.status) ? 'disabled' : ''}>
+        <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+        Sign in with Google
+      </button>`;
+    return `
+      <div class="card">
+        <div class="card-head"><h3 class="card-title">☁️ Cloud sync</h3><span class="pill">${ico} ${label}</span></div>
+        ${body}
+        ${info.error ? `<div class="alert red" style="margin-top:12px">⚠️ ${esc(info.error)}</div>` : ''}
+      </div>`;
+  }
+
   const RENDERERS = {
     dashboard: renderDashboard, transactions: renderTransactions, budgets: renderBudgets,
     debts: renderDebts, insights: renderInsights, settings: renderSettings,
@@ -641,6 +695,7 @@
     $('#monthLabel').textContent = monthName(ui.month);
     $('.month-switch').style.visibility = ui.view === 'settings' || ui.view === 'debts' ? 'hidden' : 'visible';
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view));
+    renderSyncBadge();
     $('#view').innerHTML = RENDERERS[ui.view]();
     bindViewInputs();
   }
@@ -994,6 +1049,17 @@
         });
         break;
       }
+      case 'sync-signin': window.BudgetSync?.signIn(); break;
+      case 'sync-signout': openModal(`
+        <div class="modal-head"><h2>Sign out?</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+        <p style="margin:0;color:var(--muted)">Your data stays safe in your account. Choose whether to keep a copy on this device.</p>
+        <div class="modal-foot">
+          <button class="btn btn-danger" id="soRemove">Sign out & remove from this device</button>
+          <button class="btn btn-primary" id="soKeep">Sign out & keep copy</button>
+        </div>`, (root) => {
+        $('#soKeep', root).onclick = () => { closeModal(); window.BudgetSync?.signOut(false); toast('👋 Signed out'); };
+        $('#soRemove', root).onclick = () => { closeModal(); window.BudgetSync?.signOut(true); toast('👋 Signed out and cleared this device'); };
+      }); break;
       case 'export-json': exportJson(); break;
       case 'export-csv': exportCsv(); break;
       case 'import-json': $('#importFile').click(); break;
@@ -1010,6 +1076,16 @@
 
   // Keep in sync if the app is open in two tabs
   window.addEventListener('storage', (e) => { if (e.key === STORAGE_KEY) { state = loadState(); applyTheme(); render(); } });
+
+  // Hooks used by sync.js
+  window.BudgetApp = {
+    getState: () => state,
+    replaceState(next) { state = normalize(next); save({ sync: false }); applyTheme(); render(); },
+    resetLocal() { state = freshState(); save({ sync: false }); applyTheme(); render(); },
+    onSyncChange() { renderSyncBadge(); if (ui.view === 'settings' && !modal.open) render(); },
+    toast,
+  };
+  setTimeout(() => { if (!window.BudgetSync) { syncUnavailable = true; renderSyncBadge(); if (ui.view === 'settings') render(); } }, 10000);
 
   applyTheme();
   render();

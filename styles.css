@@ -272,6 +272,19 @@ details.history li { display: flex; justify-content: space-between; gap: 8px; pa
 .swatch { width: 30px; height: 30px; border-radius: 50%; border: 3px solid transparent; background: var(--c); }
 .swatch.active { border-color: var(--text); }
 
+/* ---------- Sync ---------- */
+.title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.sync-badge {
+  display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); background: var(--surface);
+  border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 700; color: var(--muted);
+}
+.sync-badge.is-synced { color: var(--income); }
+.sync-badge.is-error { color: var(--expense); border-color: currentColor; }
+.sync-badge.is-signedout { color: var(--primary); }
+.sync-user { display: flex; align-items: center; gap: 12px; }
+.sync-user img.avatar { object-fit: cover; }
+.btn:disabled { opacity: .5; cursor: default; }
+
 /* ---------- Modal & toast ---------- */
 .modal {
   border: 0; padding: 0; border-radius: 22px; width: min(560px, calc(100vw - 24px));

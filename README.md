@@ -22,7 +22,17 @@ python3 -m http.server 8000
 
 Tip: go to **Settings → Load demo data** to see the app filled with example data, then **Erase all data** to start fresh.
 
-## Your data
-Everything is stored only in your browser on your device (no account, no server). Use **Settings → Backup (JSON)** regularly. Clearing browser data or switching devices requires restoring from a backup.
+## Your data & cloud sync
+Without signing in, data is stored only in the browser on that device.
+
+Sign in with Google under **Settings → Cloud sync** to keep the same data on every phone and computer. Changes appear on your other devices within a second or two, and edits made offline sync when you're back online. The first time a device signs in, anything already on it is added to your account.
+
+### One-time Firebase setup (project `budget-with-elias`)
+1. **Authentication** → Get started → Sign-in method → enable **Google**.
+2. **Firestore Database** → Create database (choose a location, start in production mode).
+3. **Firestore → Rules**: replace the rules with the contents of [`firestore.rules`](firestore.rules), then click **Publish**. This makes sure only you can read your data.
+4. **Authentication → Settings → Authorized domains**: add `eliasalsaei.github.io` (where the app is hosted).
+
+Data is stored as `users/{your id}/data/main` (categories, budgets, debts, settings) and `users/{your id}/months/{YYYY-MM}` (transactions for each month).
 
 See [PLAN.md](PLAN.md) for the design plan.

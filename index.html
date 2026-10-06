@@ -39,7 +39,10 @@
 
     <main class="main">
       <header class="topbar">
-        <h1 class="view-title" id="viewTitle">Dashboard</h1>
+        <div class="title-row">
+          <h1 class="view-title" id="viewTitle">Dashboard</h1>
+          <button class="sync-badge" id="syncBadge" data-action="goto" data-view="settings"></button>
+        </div>
         <div class="month-switch">
           <button class="icon-btn" id="prevMonth" aria-label="Previous month">◀</button>
           <button class="month-label" id="monthLabel" title="Go to current month">—</button>
@@ -59,5 +62,6 @@
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="app.js"></script>
+  <script type="module" src="sync.js"></script>
 </body>
 </html>
