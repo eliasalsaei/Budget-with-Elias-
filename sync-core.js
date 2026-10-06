@@ -1,7 +1,7 @@
 // Pure helpers for cloud sync (no Firebase imports, so they can be tested on their own).
 //
 // Cloud layout per user:
-//   users/{uid}/data/main        -> { json: "<categories, budgets, debts, settings>" }
+//   users/{uid}/data/main        -> { json: "<categories, budgets, debts, settings, savings, wishlist, plans>" }
 //   users/{uid}/months/{YYYY-MM} -> { json: "<transactions of that month>" }
 // Splitting transactions by month keeps every document far below Firestore's 1 MB limit
 // and means one edit only rewrites one small document.
@@ -10,8 +10,8 @@ export const MAIN = 'main';
 
 // Turn app state into { main: string, months: { 'YYYY-MM': string } }
 export function split(state) {
-  const { categories, budgets, debts, settings } = state;
-  const main = JSON.stringify({ version: 1, categories, budgets, debts, settings });
+  const { categories, budgets, debts, settings, savings, wishlist, plans } = state;
+  const main = JSON.stringify({ version: 1, categories, budgets, debts, settings, savings, wishlist, plans });
   const groups = {};
   for (const t of state.transactions || []) {
     const key = /^\d{4}-\d{2}/.test(t.date || '') ? t.date.slice(0, 7) : 'undated';
@@ -57,6 +57,9 @@ export function merge(cloud, local) {
     categories: byId(cloud.categories, local.categories),
     transactions: byId(cloud.transactions, local.transactions),
     debts: byId(cloud.debts, local.debts),
+    savings: byId(cloud.savings, local.savings),
+    wishlist: byId(cloud.wishlist, local.wishlist),
+    plans: { ...(local.plans || {}), ...(cloud.plans || {}) },
     budgets: {
       overall: Number(cloud.budgets?.overall) || Number(local.budgets?.overall) || 0,
       byCategory: { ...(local.budgets?.byCategory || {}), ...(cloud.budgets?.byCategory || {}) },

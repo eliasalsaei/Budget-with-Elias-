@@ -28,11 +28,19 @@
     ['debtin', 'Debt Repaid to Me', '🤝', '#06b6d4', 'income'],
     ['otherin', 'Other Income', '💰', '#84cc16', 'income'],
   ].map(([id, name, icon, color, type]) => ({ id, name, icon, color, type }));
+  // Money moved to or from savings: shown in transactions, but not counted as spending or income.
+  const TRANSFER_CATEGORIES = [
+    { id: 'tosavings', name: 'To Savings', icon: '🐷', color: '#a855f7', type: 'expense', transfer: true },
+    { id: 'fromsavings', name: 'From Savings', icon: '🐷', color: '#a855f7', type: 'income', transfer: true },
+  ];
 
   const VIEW_TITLES = {
     dashboard: 'Dashboard', transactions: 'Transactions', budgets: 'Budgets',
     debts: 'Debts', insights: 'Insights', settings: 'Settings',
+    savings: 'Savings', plan: 'Plan ahead',
   };
+  const PRIORITIES = { high: ['🔴', 'Must have'], medium: ['🟡', 'Nice to have'], low: ['🟢', 'Someday'] };
+  const MASK_KEY = 'budgetWithElias.maskSavings';
 
   // ---------- Helpers ----------
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -74,13 +82,16 @@
   function freshState() {
     return {
       version: 1,
-      categories: DEFAULT_CATEGORIES.map((c) => ({ ...c })),
+      categories: [...DEFAULT_CATEGORIES, ...TRANSFER_CATEGORIES].map((c) => ({ ...c })),
       transactions: [],
       budgets: { overall: 0, byCategory: {} },
       debts: [],
+      savings: [],   // { id, name, icon, color, goal, entries: [{ id, amount (+in / -out), date, note, txId? }] }
+      wishlist: [],  // { id, name, price, priority, targetDate, categoryId, link, note, saved, status, boughtDate, boughtPrice }
+      plans: {},     // { 'YYYY-MM': { income, savings, byCategory: { categoryId: amount } } }
       // cycleDay: the day each budget month starts (salary day). salaryStart: start on the actual
       // salary date when it lands within a few days of cycleDay. cycleOverrides: { 'YYYY-MM': 'YYYY-MM-DD' }.
-      settings: { theme: 'auto', cycleDay: 25, salaryStart: true, cycleOverrides: {} },
+      settings: { theme: 'auto', cycleDay: 25, salaryStart: true, cycleOverrides: {}, showSavings: true, showPlan: true },
     };
   }
 
@@ -98,12 +109,17 @@
   function normalize(s) {
     const base = freshState();
     if (!s || typeof s !== 'object') return base;
+    const categories = Array.isArray(s.categories) && s.categories.length ? [...s.categories] : base.categories;
+    for (const tc of TRANSFER_CATEGORIES) if (!categories.some((c) => c.id === tc.id)) categories.push({ ...tc });
     return {
       version: 1,
-      categories: Array.isArray(s.categories) && s.categories.length ? s.categories : base.categories,
+      categories,
       transactions: Array.isArray(s.transactions) ? s.transactions : [],
       budgets: { overall: Number(s.budgets?.overall) || 0, byCategory: { ...(s.budgets?.byCategory || {}) } },
       debts: Array.isArray(s.debts) ? s.debts.map((d) => ({ payments: [], ...d })) : [],
+      savings: Array.isArray(s.savings) ? s.savings.map((a) => ({ entries: [], ...a })) : [],
+      wishlist: Array.isArray(s.wishlist) ? s.wishlist : [],
+      plans: s.plans && typeof s.plans === 'object' ? s.plans : {},
       settings: { ...base.settings, ...(s.settings || {}) },
     };
   }
@@ -173,17 +189,25 @@
     view: 'dashboard',
     month: currentPeriod(),
     txFilter: { type: 'all', category: '', method: '', q: '' },
+    planOffset: 1, // which budget month the plan screen shows, relative to the current one
+    maskSavings: (() => { try { return localStorage.getItem(MASK_KEY) === '1'; } catch { return false; } })(),
     debtTab: 'owe',
   };
 
   const catById = (id) => state.categories.find((c) => c.id === id) || { id, name: 'Uncategorised', icon: '❔', color: '#94a3b8', type: 'expense' };
-  const catsOf = (type) => state.categories.filter((c) => c.type === type);
+  const catsOf = (type) => state.categories.filter((c) => c.type === type && !c.transfer);
+  const isTransfer = (t) => !!catById(t.categoryId).transfer;
   const txInMonth = (key = ui.month) => {
     const start = periodStart(key), end = periodEnd(key);
     return state.transactions.filter((t) => t.date && t.date >= start && t.date <= end);
   };
-  const expensesIn = (key) => txInMonth(key).filter((t) => t.type === 'expense');
-  const incomeIn = (key) => txInMonth(key).filter((t) => t.type === 'income');
+  const expensesIn = (key) => txInMonth(key).filter((t) => t.type === 'expense' && !isTransfer(t));
+  const incomeIn = (key) => txInMonth(key).filter((t) => t.type === 'income' && !isTransfer(t));
+  // Net money moved into savings from this month's budget (deposits minus withdrawals)
+  const savedIn = (key) => round3(sum(txInMonth(key).filter((t) => isTransfer(t)), (t) => (t.type === 'expense' ? t.amount : -t.amount)));
+  const accountBalance = (a) => sum(a.entries || [], (e) => e.amount);
+  const showSavings = () => state.settings.showSavings !== false;
+  const showPlan = () => state.settings.showPlan !== false;
   const debtPaid = (d) => sum(d.payments || [], (p) => p.amount);
   const debtLeft = (d) => Math.max(0, round3(d.amount - debtPaid(d)));
   const sortTx = (list) => [...list].sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || 0) - (a.createdAt || 0));
@@ -251,7 +275,7 @@
           <div class="tx-meta">${meta || fmtDate(t.date)}</div>
         </div>
         <div class="tx-right">
-          <div class="tx-amt ${t.type}">${t.type === 'expense' ? '−' : '+'}${bhd(t.amount)}</div>
+          <div class="tx-amt ${cat.transfer ? 'transfer' : t.type}">${t.type === 'expense' ? '−' : '+'}${bhd(t.amount)}</div>
           ${actions ? `<div class="tx-actions">
             <button data-action="edit-tx" data-id="${t.id}" title="Edit">✏️</button>
             <button data-action="del-tx" data-id="${t.id}" title="Delete">🗑️</button>
@@ -336,7 +360,8 @@
   function renderDashboard() {
     const exp = expensesIn(ui.month), inc = incomeIn(ui.month);
     const spent = sum(exp, (t) => t.amount), earned = sum(inc, (t) => t.amount);
-    const balance = round3(earned - spent);
+    const saved = savedIn(ui.month);
+    const balance = round3(earned - spent - saved);
     const overall = state.budgets.overall;
     const byCat = spendByCategory(ui.month);
     const days = periodDays(ui.month);
@@ -369,7 +394,7 @@
 
     return `
       <div class="grid grid-4">
-        <div class="stat hero"><div class="stat-label">💜 Balance this month</div><div class="stat-value">${bhd(balance)}</div><div class="stat-foot">${balance >= 0 ? 'Income minus spending' : 'You spent more than you earned'}</div></div>
+        <div class="stat hero"><div class="stat-label">💜 Balance this month</div><div class="stat-value">${bhd(balance)}</div><div class="stat-foot">${balance < 0 ? 'You spent more than you earned' : saved ? `After moving ${bhd(saved)} to savings` : 'Income minus spending'}</div></div>
         <div class="stat income"><div class="stat-label">⬆️ Income</div><div class="stat-value">${bhd(earned)}</div><div class="stat-foot">${inc.length} record${inc.length === 1 ? '' : 's'}</div></div>
         <div class="stat expense"><div class="stat-label">⬇️ Spending</div><div class="stat-value">${bhd(spent)}</div><div class="stat-foot">${exp.length} expense${exp.length === 1 ? '' : 's'}</div></div>
         <div class="stat budget"><div class="stat-label">🎯 Budget left</div><div class="stat-value">${budgetLeft === null ? '—' : bhd(budgetLeft)}</div><div class="stat-foot">${overall > 0 ? `of ${bhd(overall)}` : '<u data-action="goto" data-view="budgets" style="cursor:pointer">Set a monthly budget</u>'}</div></div>
@@ -405,8 +430,226 @@
               <div class="kv-row"><span>${d.direction === 'owe' ? '🔴' : '🟢'} ${esc(d.person)}${d.dueDate ? ` · due ${fmtDate(d.dueDate, { day: 'numeric', month: 'short' })}` : ''}</span><b>${bhd(debtLeft(d))}</b></div>`).join('') || '<div class="card-sub">No open debts 🎉</div>'}
           </div>
         </div>
+      </div>
+      ${showSavings() || showPlan() ? `<div class="grid grid-2">${showSavings() ? dashSavingsCard() : ''}${showPlan() ? dashWishlistCard() : ''}</div>` : ''}`;
+  }
+
+  const money = (n) => (ui.maskSavings ? 'BHD •••••' : bhd(n));
+
+  function dashSavingsCard() {
+    const total = sum(state.savings, accountBalance);
+    return `
+      <div class="card">
+        <div class="card-head"><h3 class="card-title">🐷 Savings</h3><button class="link-btn" data-action="goto" data-view="savings">Open →</button></div>
+        <div class="stat savings" style="padding:14px"><div class="stat-label">Total saved</div><div class="stat-value" style="font-size:19px">${money(total)}</div>
+          <div class="stat-foot">${savedIn(ui.month) ? `${savedIn(ui.month) > 0 ? '+' : '−'}${money(Math.abs(savedIn(ui.month)))} this month` : 'Nothing moved this month'}</div></div>
+        <div class="kv" style="margin-top:14px">
+          ${state.savings.slice(0, 4).map((a) => `<div class="kv-row"><span>${esc(a.icon)} ${esc(a.name)}</span><b>${money(accountBalance(a))}</b></div>`).join('')
+            || '<div class="card-sub">No savings account yet. <u data-action="goto" data-view="savings" style="cursor:pointer">Create one</u></div>'}
+        </div>
       </div>`;
   }
+
+  function dashWishlistCard() {
+    const open = state.wishlist.filter((w) => w.status !== 'bought');
+    const needed = sum(open, (w) => Math.max(0, w.price - (w.saved || 0)));
+    return `
+      <div class="card">
+        <div class="card-head"><h3 class="card-title">🛍️ Future purchases</h3><button class="link-btn" data-action="goto" data-view="plan">Plan →</button></div>
+        ${open.length ? `<div class="summary-line" style="margin-bottom:8px"><span>${open.length} planned</span><span>Still needed <b>${bhd(needed)}</b></span></div>
+          <div class="kv">${sortWishlist(open).slice(0, 5).map((w) => `<div class="kv-row"><span>${PRIORITIES[w.priority]?.[0] || '🟡'} ${esc(w.name)}${w.targetDate ? ` · ${fmtDate(w.targetDate, { month: 'short', year: 'numeric' })}` : ''}</span><b>${bhd(w.price)}</b></div>`).join('')}</div>`
+          : empty('🛍️', 'Nothing planned yet.', '<button class="btn btn-primary btn-sm" data-action="add-wish">＋ Add a future purchase</button>')}
+      </div>`;
+  }
+
+  const sortWishlist = (list) => list.slice().sort((a, b) =>
+    (['high', 'medium', 'low'].indexOf(a.priority) - ['high', 'medium', 'low'].indexOf(b.priority)) || (a.targetDate || '9999').localeCompare(b.targetDate || '9999'));
+
+  // ---------- Savings ----------
+  function renderSavings() {
+    const total = sum(state.savings, accountBalance);
+    const goals = state.savings.filter((a) => Number(a.goal) > 0);
+    const goalTotal = sum(goals, (a) => a.goal);
+    const goalSaved = sum(goals, (a) => Math.min(accountBalance(a), a.goal));
+    const cur = currentPeriod();
+    return `
+      <div class="grid grid-3">
+        <div class="stat savings"><div class="stat-label">🐷 Total savings</div><div class="stat-value">${money(total)}</div><div class="stat-foot">${state.savings.length} account${state.savings.length === 1 ? '' : 's'}</div></div>
+        <div class="stat income"><div class="stat-label">📥 Saved this month</div><div class="stat-value">${money(savedIn(cur))}</div><div class="stat-foot">${esc(periodLabel(cur))}</div></div>
+        <div class="stat budget"><div class="stat-label">🏁 Goals reached</div><div class="stat-value">${goalTotal ? `${Math.round((goalSaved / goalTotal) * 100)}%` : '—'}</div><div class="stat-foot">${goalTotal ? `${money(goalSaved)} of ${money(goalTotal)}` : 'Add a goal to an account'}</div></div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3 class="card-title">Your savings accounts</h3>
+          <div class="btn-row">
+            <button class="btn btn-sm" data-action="mask-savings">${ui.maskSavings ? '👁️ Show amounts' : '🙈 Hide amounts'}</button>
+            <button class="btn btn-sm btn-primary" data-action="add-account">＋ New account</button>
+          </div>
+        </div>
+        <div class="grid grid-2">
+          ${state.savings.length ? state.savings.map((a) => {
+            const bal = accountBalance(a);
+            const pct = a.goal ? Math.min(100, (bal / a.goal) * 100) : 0;
+            return `
+              <div class="card debt-card" style="box-shadow:none;background:var(--surface-2)">
+                <div class="debt-top">
+                  <div class="debt-person">
+                    <span class="avatar" style="background:${esc(a.color)};font-size:20px">${esc(a.icon)}</span>
+                    <div style="min-width:0"><div class="debt-name">${esc(a.name)}</div>
+                      <div class="card-sub">${a.goal ? `Goal ${money(a.goal)}${bal >= a.goal ? ' · <span class="pill green">🎉 Reached</span>' : ''}` : 'No goal set'}</div></div>
+                  </div>
+                  <div class="debt-amt"><b style="color:var(--savings)">${money(bal)}</b></div>
+                </div>
+                ${a.goal ? `<div class="bar" style="--c:var(--savings)"><i style="width:${pct}%"></i></div><div class="card-sub">${Math.round(pct)}% of goal${bal < a.goal ? ` · ${money(a.goal - bal)} to go` : ''}</div>` : ''}
+                <div class="btn-row">
+                  <button class="btn btn-sm btn-income" data-action="save-in" data-id="${a.id}">📥 Add money</button>
+                  <button class="btn btn-sm" data-action="save-out" data-id="${a.id}" ${bal <= 0 ? 'disabled' : ''}>📤 Take out</button>
+                  <button class="btn btn-sm" data-action="edit-account" data-id="${a.id}">✏️</button>
+                  <button class="btn btn-sm btn-danger" data-action="del-account" data-id="${a.id}">🗑️</button>
+                </div>
+                ${a.entries.length ? `<details class="history"><summary>History (${a.entries.length})</summary><ul>
+                  ${a.entries.slice().sort((x, y) => y.date.localeCompare(x.date)).map((e) => `<li><span>${fmtDate(e.date)}${e.note ? ` · ${esc(e.note)}` : ''}</span><span><b style="color:${e.amount >= 0 ? 'var(--income)' : 'var(--expense)'}">${e.amount >= 0 ? '+' : '−'}${money(Math.abs(e.amount))}</b> <button class="link-btn" data-action="del-entry" data-id="${a.id}" data-eid="${e.id}" title="Remove">✕</button></span></li>`).join('')}
+                </ul></details>` : ''}
+              </div>`;
+          }).join('') : `<div class="span-2">${empty('🐷', 'Create a savings account to start tracking what you put aside.', '<button class="btn btn-primary" data-action="add-account">＋ New savings account</button>')}</div>`}
+        </div>
+        <p class="card-sub" style="margin-bottom:0">Money you add here is taken from this month's balance but isn't counted as spending, so your budgets stay accurate. You can hide this section in Settings.</p>
+      </div>`;
+  }
+
+  // ---------- Plan ahead ----------
+  function renderPlan() {
+    return `${wishlistCard()}${planCard()}`;
+  }
+
+  function wishlistCard() {
+    const open = sortWishlist(state.wishlist.filter((w) => w.status !== 'bought'));
+    const bought = state.wishlist.filter((w) => w.status === 'bought').sort((a, b) => (b.boughtDate || '').localeCompare(a.boughtDate || ''));
+    const total = sum(open, (w) => w.price), aside = sum(open, (w) => Math.min(w.saved || 0, w.price));
+    return `
+      <div class="card">
+        <div class="card-head"><h3 class="card-title">🛍️ Future purchases</h3><button class="btn btn-sm btn-primary" data-action="add-wish">＋ Add item</button></div>
+        ${open.length ? `<div class="summary-line" style="margin-bottom:10px"><span>Planned <b>${bhd(total)}</b></span><span>Set aside <b style="color:var(--income)">${bhd(aside)}</b></span><span>Still needed <b style="color:var(--expense)">${bhd(total - aside)}</b></span></div>` : ''}
+        <div class="grid grid-2">
+          ${open.length ? open.map((w) => {
+            const cat = catById(w.categoryId);
+            const pct = w.price ? Math.min(100, ((w.saved || 0) / w.price) * 100) : 0;
+            const late = w.targetDate && w.targetDate < todayStr();
+            const [pIco, pLabel] = PRIORITIES[w.priority] || PRIORITIES.medium;
+            return `
+              <div class="card debt-card" style="box-shadow:none;background:var(--surface-2)">
+                <div class="debt-top">
+                  <div class="debt-person">${icon(cat)}
+                    <div style="min-width:0"><div class="debt-name">${esc(w.name)}</div>
+                      <div class="card-sub">${pIco} ${pLabel}${w.targetDate ? ` · <span class="${late ? 'pill red' : ''}">by ${fmtDate(w.targetDate, { day: 'numeric', month: 'short', year: 'numeric' })}</span>` : ''}</div></div>
+                  </div>
+                  <div class="debt-amt"><b>${bhd(w.price)}</b><small>${esc(cat.name)}</small></div>
+                </div>
+                ${w.note || w.link ? `<div class="card-sub">${w.note ? `📝 ${esc(w.note)}` : ''} ${/^https?:\/\//i.test(w.link || '') ? `<a href="${esc(w.link)}" target="_blank" rel="noopener" style="color:var(--primary);font-weight:700">🔗 Link</a>` : ''}</div>` : ''}
+                <div class="bar" style="--c:var(--income)"><i style="width:${pct}%"></i></div>
+                <div class="card-sub">${bhd(w.saved || 0)} set aside · ${bhd(Math.max(0, w.price - (w.saved || 0)))} to go</div>
+                <div class="btn-row">
+                  <button class="btn btn-sm" data-action="wish-aside" data-id="${w.id}">💰 Set aside</button>
+                  <button class="btn btn-sm btn-income" data-action="wish-bought" data-id="${w.id}">✅ Bought</button>
+                  <button class="btn btn-sm" data-action="edit-wish" data-id="${w.id}">✏️</button>
+                  <button class="btn btn-sm btn-danger" data-action="del-wish" data-id="${w.id}">🗑️</button>
+                </div>
+              </div>`;
+          }).join('') : `<div class="span-2">${empty('🛍️', 'Add things you plan to buy: phone, furniture, a trip…', '<button class="btn btn-primary" data-action="add-wish">＋ Add a future purchase</button>')}</div>`}
+        </div>
+        ${bought.length ? `<details class="history" style="margin-top:12px"><summary>Already bought (${bought.length})</summary><ul>
+          ${bought.map((w) => `<li><span>✅ ${esc(w.name)} · ${fmtDate(w.boughtDate)}</span><span><b>${bhd(w.boughtPrice ?? w.price)}</b> <button class="link-btn" data-action="del-wish" data-id="${w.id}" title="Remove">✕</button></span></li>`).join('')}
+        </ul></details>` : ''}
+      </div>`;
+  }
+
+  function planCard() {
+    const cur = currentPeriod();
+    const key = shiftMonth(cur, ui.planOffset);
+    const prevKey = shiftMonth(key, -1);
+    const plan = state.plans[key] || { income: 0, savings: 0, byCategory: {} };
+    const prevSpend = new Map(spendByCategory(prevKey).map((r) => [r.cat.id, r.total]));
+    const prevIncome = sum(incomeIn(prevKey), (t) => t.amount);
+    const start = periodStart(key), end = periodEnd(key);
+    const purchases = state.wishlist.filter((w) => w.status !== 'bought' && w.targetDate && w.targetDate <= end && (w.targetDate >= start || ui.planOffset === 1));
+    const purchaseTotal = sum(purchases, (w) => Math.max(0, w.price - (w.saved || 0)));
+    const catTotal = sum(Object.values(plan.byCategory || {}));
+    const income = Number(plan.income) || 0, savings = Number(plan.savings) || 0;
+    const left = round3(income - catTotal - savings - purchaseTotal);
+    const prevLabel = prevKey === cur ? 'This month so far' : periodLabel(prevKey);
+    const pct = (v) => (income > 0 ? Math.max(0, Math.min(100, (v / income) * 100)) : 0);
+    return `
+      <div class="card">
+        <div class="card-head">
+          <h3 class="card-title">🗓️ Budget plan</h3>
+          <div class="month-switch" style="box-shadow:none">
+            <button class="icon-btn" data-action="plan-shift" data-d="-1" ${ui.planOffset <= 0 ? 'disabled' : ''} aria-label="Previous">◀</button>
+            <span class="month-label" style="cursor:default">${ui.planOffset === 1 ? 'Next month · ' : ui.planOffset === 0 ? 'This month · ' : ''}${esc(periodLabel(key))}</span>
+            <button class="icon-btn" data-action="plan-shift" data-d="1" ${ui.planOffset >= 6 ? 'disabled' : ''} aria-label="Next">▶</button>
+          </div>
+        </div>
+        <div class="grid grid-2">
+          <div class="field"><label for="planIncome">Expected income</label>
+            <div class="amount-input"><span>BHD</span><input class="input" id="planIncome" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0.000" value="${income || ''}"></div>
+            <span class="card-sub">${prevLabel}: ${bhd(prevIncome)}${prevIncome && !income ? ` · <button class="link-btn" data-action="plan-income-prev">Use this</button>` : ''}</span>
+          </div>
+          <div class="field"><label for="planSavings">Planned savings${showSavings() ? ' 🐷' : ''}</label>
+            <div class="amount-input"><span>BHD</span><input class="input" id="planSavings" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0.000" value="${savings || ''}"></div>
+            <span class="card-sub">${prevLabel}: ${bhd(savedIn(prevKey))} saved</span>
+          </div>
+        </div>
+
+        <div class="plan-summary">
+          <div class="plan-bar">
+            <i style="width:${pct(catTotal)}%;background:var(--expense)" title="Expenses"></i>
+            <i style="width:${pct(savings)}%;background:var(--savings)" title="Savings"></i>
+            <i style="width:${pct(purchaseTotal)}%;background:var(--warn)" title="Purchases"></i>
+          </div>
+          <div class="kv">
+            <div class="kv-row"><span>💰 Expected income</span><b>${bhd(income)}</b></div>
+            <div class="kv-row"><span><i class="dot" style="background:var(--expense)"></i>Planned expenses</span><b>−${bhd(catTotal)}</b></div>
+            <div class="kv-row"><span><i class="dot" style="background:var(--savings)"></i>Savings</span><b>−${bhd(savings)}</b></div>
+            <div class="kv-row"><span><i class="dot" style="background:var(--warn)"></i>Future purchases (${purchases.length})</span><b>−${bhd(purchaseTotal)}</b></div>
+            <div class="kv-row" style="border-top:1px dashed var(--border);padding-top:10px;font-size:16px"><span style="color:var(--text);font-weight:800">${left >= 0 ? '✅ Left over' : '⚠️ Short by'}</span><b style="color:${left >= 0 ? 'var(--income)' : 'var(--expense)'}">${bhd(Math.abs(left))}</b></div>
+          </div>
+        </div>
+
+        ${purchases.length ? `<div class="card-sub" style="margin:14px 0 4px;font-weight:700">Purchases due by ${fmtDate(end, { day: 'numeric', month: 'short' })}</div>
+          <div class="kv">${purchases.map((w) => `<div class="kv-row"><span>${PRIORITIES[w.priority]?.[0] || '🟡'} ${esc(w.name)} · ${fmtDate(w.targetDate, { day: 'numeric', month: 'short' })}</span><b>${bhd(Math.max(0, w.price - (w.saved || 0)))}</b></div>`).join('')}</div>`
+          : '<p class="card-sub">Future purchases with a target date in this month are added automatically.</p>'}
+
+        <div class="card-head" style="margin-top:18px">
+          <h3 class="card-title">Planned spending by category</h3>
+          <div class="btn-row">
+            <button class="btn btn-sm" data-action="plan-fill" data-src="budgets">Copy my budgets</button>
+            <button class="btn btn-sm" data-action="plan-fill" data-src="last">Copy ${prevKey === cur ? 'this' : 'last'} month's spending</button>
+          </div>
+        </div>
+        <div class="plan-table">
+          <div class="plan-row plan-head"><span>Category</span><span>${esc(prevLabel)}</span><span>Planned</span></div>
+          ${catsOf('expense').map((c) => `
+            <div class="plan-row">
+              <span class="rank-name"><span>${esc(c.icon)}</span><span>${esc(c.name)}</span></span>
+              <span class="card-sub">${bhd(prevSpend.get(c.id) || 0)}</span>
+              <input class="input limit-input" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0" data-plan-cat="${c.id}" value="${plan.byCategory?.[c.id] || ''}" aria-label="Planned for ${esc(c.name)}">
+            </div>`).join('')}
+          <div class="plan-row plan-head"><span>Total</span><span>${bhd(sum([...prevSpend.values()]))}</span><span>${bhd(catTotal)}</span></div>
+        </div>
+        <div class="btn-row" style="margin-top:14px;justify-content:flex-end">
+          <button class="btn btn-sm btn-danger" data-action="plan-clear">Clear plan</button>
+          <button class="btn btn-primary" data-action="plan-apply" ${catTotal ? '' : 'disabled'}>🎯 Use this plan as my budgets</button>
+        </div>
+      </div>`;
+  }
+
+  function planFor(key) {
+    state.plans[key] = state.plans[key] || { income: 0, savings: 0, byCategory: {} };
+    state.plans[key].byCategory = state.plans[key].byCategory || {};
+    return state.plans[key];
+  }
+  const planKey = () => shiftMonth(currentPeriod(), ui.planOffset);
+
+
 
   function renderTransactions() {
     const f = ui.txFilter;
@@ -662,6 +905,16 @@
     return `
       ${syncCard()}
       <div class="card">
+        <div class="card-head"><h3 class="card-title">👁️ Sections</h3></div>
+        <div class="grid" style="gap:10px">
+          <label class="toggle-row"><span><b>🐷 Savings</b><br><span class="card-sub">Savings accounts, goals and the savings card on the dashboard</span></span>
+            <input type="checkbox" class="switch" id="showSavings" ${showSavings() ? 'checked' : ''}></label>
+          <label class="toggle-row"><span><b>🗓️ Plan ahead</b><br><span class="card-sub">Future purchases and next month's budget plan</span></span>
+            <input type="checkbox" class="switch" id="showPlan" ${showPlan() ? 'checked' : ''}></label>
+        </div>
+        <p class="card-sub" style="margin-bottom:0">Hiding a section only hides it from view. Nothing is deleted, and you can turn it back on any time.</p>
+      </div>
+      <div class="card">
         <div class="card-head"><h3 class="card-title">📅 Budget month</h3><span class="pill">Now: ${esc(periodLabel(cur))}</span></div>
         <p class="card-sub" style="margin-top:0">Start each month on the day your salary arrives, so budgets and totals match your pay cycle.</p>
         <div class="form-grid" style="align-items:center">
@@ -759,12 +1012,16 @@
   const RENDERERS = {
     dashboard: renderDashboard, transactions: renderTransactions, budgets: renderBudgets,
     debts: renderDebts, insights: renderInsights, settings: renderSettings,
+    savings: renderSavings, plan: renderPlan,
   };
 
   function render() {
     $('#viewTitle').textContent = VIEW_TITLES[ui.view];
     $('#monthLabel').textContent = periodLabel(ui.month);
-    $('.month-switch').style.visibility = ui.view === 'settings' || ui.view === 'debts' ? 'hidden' : 'visible';
+    if ((ui.view === 'savings' && !showSavings()) || (ui.view === 'plan' && !showPlan())) ui.view = 'dashboard';
+    $('.topbar .month-switch').hidden = ['settings', 'debts', 'savings', 'plan'].includes(ui.view);
+    $('.nav-item[data-view="savings"]').hidden = !showSavings();
+    $('.nav-item[data-view="plan"]').hidden = !showPlan();
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view));
     renderSyncBadge();
     $('#view').innerHTML = RENDERERS[ui.view]();
@@ -795,12 +1052,24 @@
         save(); render(); toast('✅ Category budget saved');
       });
     }
+    if (ui.view === 'plan') {
+      const num = (el) => Math.max(0, round3(el.value));
+      $('#planIncome', v).onchange = (e) => { planFor(planKey()).income = num(e.target); save(); render(); };
+      $('#planSavings', v).onchange = (e) => { planFor(planKey()).savings = num(e.target); save(); render(); };
+      $$('[data-plan-cat]', v).forEach((inp) => inp.onchange = () => {
+        const plan = planFor(planKey()), val = num(inp);
+        if (val) plan.byCategory[inp.dataset.planCat] = val; else delete plan.byCategory[inp.dataset.planCat];
+        save(); render();
+      });
+    }
     if (ui.view === 'debts') {
       $$('#debtTab button', v).forEach((b) => b.onclick = () => { ui.debtTab = b.dataset.tab; render(); });
     }
     if (ui.view === 'settings') {
       $$('[data-theme-set]', v).forEach((b) => b.onclick = () => { state.settings.theme = b.dataset.themeSet; save(); applyTheme(); render(); });
       $('#importFile', v).onchange = importJson;
+      $('#showSavings', v).onchange = (e) => { state.settings.showSavings = e.target.checked; save(); render(); toast(e.target.checked ? '🐷 Savings shown' : '🙈 Savings hidden'); };
+      $('#showPlan', v).onchange = (e) => { state.settings.showPlan = e.target.checked; save(); render(); toast(e.target.checked ? '🗓️ Plan shown' : '🙈 Plan hidden'); };
       $('#cycleDay', v).onchange = (e) => { state.settings.cycleDay = Number(e.target.value); save(); ui.month = currentPeriod(); render(); toast('📅 Budget month updated'); };
       $('#salaryStart', v).onchange = (e) => { state.settings.salaryStart = e.target.checked; save(); ui.month = currentPeriod(); render(); };
     }
@@ -966,6 +1235,159 @@
     });
   }
 
+  // ---------- Savings forms ----------
+  function openAccountForm(existing = null) {
+    const a = existing ? { ...existing } : { name: '', icon: '🐷', color: '#a855f7', goal: '' };
+    const icons = ['🐷', '🏦', '💰', '🏠', '🚗', '✈️', '🎓', '💍', '👶', '🕋', '🆘', '📈'];
+    openModal(`
+      <div class="modal-head"><h2>${existing ? 'Edit' : 'New'} savings account</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+      <form id="accForm" class="form-grid" autocomplete="off">
+        <div class="field full"><label for="aName">Name</label><input class="input" id="aName" maxlength="40" required placeholder="e.g. Emergency fund, NBB Savings" value="${esc(a.name)}"></div>
+        <div class="field full"><label>Icon</label><div class="swatches" style="gap:6px">${icons.map((i) => `<button type="button" class="btn btn-sm ${i === a.icon ? 'btn-primary' : ''}" data-aicon="${i}" style="font-size:18px;padding:4px 8px">${i}</button>`).join('')}</div></div>
+        <div class="field full"><label>Colour</label><div class="swatches">${PALETTE.map((p) => `<button type="button" class="swatch ${p === a.color ? 'active' : ''}" data-color="${p}" style="--c:${p}" aria-label="${p}"></button>`).join('')}</div></div>
+        <div class="field"><label for="aGoal">Goal (optional)</label><div class="amount-input"><span>BHD</span><input class="input" id="aGoal" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0.000" value="${a.goal || ''}"></div></div>
+        ${existing ? '' : `<div class="field"><label for="aOpen">Money already in it</label><div class="amount-input"><span>BHD</span><input class="input" id="aOpen" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0.000"></div></div>`}
+      </form>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn btn-primary" type="submit" form="accForm">💾 Save</button></div>`, (root) => {
+      $$('[data-aicon]', root).forEach((b) => b.onclick = () => { a.icon = b.dataset.aicon; $$('[data-aicon]', root).forEach((x) => x.classList.toggle('btn-primary', x === b)); });
+      $$('[data-color]', root).forEach((b) => b.onclick = () => { a.color = b.dataset.color; $$('[data-color]', root).forEach((x) => x.classList.toggle('active', x === b)); });
+      $('#accForm', root).onsubmit = (e) => {
+        e.preventDefault();
+        const name = $('#aName', root).value.trim();
+        if (!name) return;
+        const goal = Math.max(0, round3($('#aGoal', root).value));
+        if (existing) {
+          Object.assign(existing, { name, icon: a.icon, color: a.color, goal });
+        } else {
+          const opening = Math.max(0, round3($('#aOpen', root).value));
+          state.savings.push({ id: uid(), name, icon: a.icon, color: a.color, goal, createdAt: Date.now(),
+            entries: opening ? [{ id: uid(), amount: opening, date: todayStr(), note: 'Opening balance' }] : [] });
+        }
+        save(); closeModal(); render(); toast('🐷 Savings account saved');
+      };
+    });
+  }
+
+  function openEntryForm(acc, dir) {
+    const into = dir === 'in';
+    const bal = accountBalance(acc);
+    openModal(`
+      <div class="modal-head"><h2>${into ? `Add to ${esc(acc.name)}` : `Take from ${esc(acc.name)}`}</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+      <p class="card-sub" style="margin:0">Balance: <b>${bhd(bal)}</b></p>
+      <form id="entryForm" class="form-grid" autocomplete="off">
+        <div class="field full"><label for="eAmount">Amount</label><div class="amount-input"><span>BHD</span><input class="input" id="eAmount" type="number" min="0.001" ${into ? '' : `max="${bal}"`} step="0.001" inputmode="decimal" required placeholder="0.000"></div></div>
+        <div class="field"><label for="eDate">Date</label><input class="input" id="eDate" type="date" required value="${todayStr()}"></div>
+        <div class="field"><label for="eNote">Note (optional)</label><input class="input" id="eNote" maxlength="80" placeholder="${into ? 'e.g. Monthly saving' : 'e.g. Car repair'}"></div>
+        <label class="full" style="display:flex;gap:10px;align-items:center;font-weight:600">
+          <input type="checkbox" id="eLink" checked style="width:18px;height:18px;flex:none">
+          ${into ? "Take it from this month's money (lowers this month's balance)" : "Add it to this month's money (raises this month's balance)"}
+        </label>
+      </form>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn ${into ? 'btn-income' : 'btn-expense'}" type="submit" form="entryForm">💾 Save</button></div>`, (root) => {
+      setTimeout(() => $('#eAmount', root)?.focus(), 50);
+      $('#entryForm', root).onsubmit = (e) => {
+        e.preventDefault();
+        let amount = round3($('#eAmount', root).value);
+        if (!into) amount = Math.min(amount, bal);
+        if (!(amount > 0)) { toast('Please enter an amount above 0'); return; }
+        const date = $('#eDate', root).value || todayStr();
+        const note = $('#eNote', root).value.trim();
+        const entry = { id: uid(), amount: into ? amount : -amount, date, note };
+        if ($('#eLink', root).checked) {
+          const txId = uid();
+          state.transactions.push({ id: txId, type: into ? 'expense' : 'income', amount, categoryId: into ? 'tosavings' : 'fromsavings', date,
+            place: acc.name, method: 'Bank Transfer', note: note || (into ? 'Moved to savings' : 'Taken from savings'), createdAt: Date.now() });
+          entry.txId = txId;
+        }
+        acc.entries.push(entry);
+        save(); closeModal(); render();
+        toast(into ? (acc.goal && accountBalance(acc) >= acc.goal && bal < acc.goal ? '🎉 Goal reached!' : `🐷 ${bhd(amount)} saved`) : `📤 ${bhd(amount)} taken out`);
+      };
+    });
+  }
+
+  // ---------- Future purchase forms ----------
+  function openWishForm(existing = null) {
+    const w = existing ? { ...existing } : { name: '', price: '', priority: 'medium', targetDate: '', categoryId: 'shopping', link: '', note: '', saved: '' };
+    const cats = catsOf('expense');
+    openModal(`
+      <div class="modal-head"><h2>${existing ? 'Edit' : 'New'} future purchase</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+      <form id="wishForm" class="form-grid" autocomplete="off">
+        <div class="field full"><label for="wName">What do you want to buy?</label><input class="input" id="wName" maxlength="60" required placeholder="e.g. iPhone, sofa, Umrah trip" value="${esc(w.name)}"></div>
+        <div class="field"><label for="wPrice">Expected price</label><div class="amount-input"><span>BHD</span><input class="input" id="wPrice" type="number" min="0.001" step="0.001" inputmode="decimal" required placeholder="0.000" value="${w.price}"></div></div>
+        <div class="field"><label for="wSaved">Already set aside</label><div class="amount-input"><span>BHD</span><input class="input" id="wSaved" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0.000" value="${w.saved || ''}"></div></div>
+        <div class="field full"><label>Priority</label>
+          <div class="seg" id="wPri">${Object.entries(PRIORITIES).map(([k, [i, l]]) => `<button type="button" data-pri="${k}" class="${w.priority === k ? 'active' : ''}">${i} ${l}</button>`).join('')}</div>
+        </div>
+        <div class="field"><label for="wDate">Buy by (optional)</label><input class="input" id="wDate" type="date" value="${w.targetDate || ''}"></div>
+        <div class="field"><label for="wCat">Category</label><select class="input" id="wCat">${cats.map((c) => `<option value="${c.id}" ${c.id === w.categoryId ? 'selected' : ''}>${esc(c.icon)} ${esc(c.name)}</option>`).join('')}</select></div>
+        <div class="field full"><label for="wLink">Link (optional)</label><input class="input" id="wLink" type="url" maxlength="300" placeholder="https://…" value="${esc(w.link)}"></div>
+        <div class="field full"><label for="wNote">Note (optional)</label><input class="input" id="wNote" maxlength="140" placeholder="Colour, size, shop…" value="${esc(w.note)}"></div>
+      </form>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn btn-primary" type="submit" form="wishForm">💾 Save</button></div>`, (root) => {
+      $$('[data-pri]', root).forEach((b) => b.onclick = () => { w.priority = b.dataset.pri; $$('[data-pri]', root).forEach((x) => x.classList.toggle('active', x === b)); });
+      $('#wishForm', root).onsubmit = (e) => {
+        e.preventDefault();
+        const price = round3($('#wPrice', root).value);
+        const name = $('#wName', root).value.trim();
+        if (!name || !(price > 0)) { toast('Please fill in the name and price'); return; }
+        const rec = {
+          id: existing?.id || uid(), name, price, priority: w.priority, targetDate: $('#wDate', root).value, categoryId: $('#wCat', root).value,
+          link: $('#wLink', root).value.trim(), note: $('#wNote', root).value.trim(), saved: Math.max(0, round3($('#wSaved', root).value)),
+          status: 'planned', createdAt: existing?.createdAt || Date.now(),
+        };
+        if (existing) state.wishlist = state.wishlist.map((x) => (x.id === rec.id ? rec : x));
+        else state.wishlist.push(rec);
+        save(); closeModal(); render(); toast('🛍️ Purchase saved');
+      };
+    });
+  }
+
+  function openAsideForm(w) {
+    openModal(`
+      <div class="modal-head"><h2>Set aside for ${esc(w.name)}</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+      <p class="card-sub" style="margin:0">${bhd(w.saved || 0)} of ${bhd(w.price)} set aside so far.</p>
+      <form id="asideForm" class="grid" style="gap:12px">
+        <div class="field"><label for="sAmount">Amount to add</label><div class="amount-input"><span>BHD</span><input class="input" id="sAmount" type="number" min="0.001" step="0.001" inputmode="decimal" required value="${round3(Math.max(0, w.price - (w.saved || 0)))}"></div></div>
+      </form>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn btn-primary" type="submit" form="asideForm">💾 Save</button></div>`, (root) => {
+      $('#asideForm', root).onsubmit = (e) => {
+        e.preventDefault();
+        const amt = round3($('#sAmount', root).value);
+        if (!(amt > 0)) return;
+        w.saved = round3((w.saved || 0) + amt);
+        save(); closeModal(); render(); toast(w.saved >= w.price ? '🎉 Fully saved up!' : `💰 ${bhd(amt)} set aside`);
+      };
+    });
+  }
+
+  function openBoughtForm(w) {
+    openModal(`
+      <div class="modal-head"><h2>Bought ${esc(w.name)} 🎉</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+      <form id="boughtForm" class="form-grid">
+        <div class="field full"><label for="bPrice">Price you paid</label><div class="amount-input"><span>BHD</span><input class="input" id="bPrice" type="number" min="0.001" step="0.001" inputmode="decimal" required value="${w.price}"></div></div>
+        <div class="field"><label for="bDate">Date</label><input class="input" id="bDate" type="date" required value="${todayStr()}"></div>
+        <div class="field"><label for="bMethod">Payment method</label><select class="input" id="bMethod">${METHODS.map((m) => `<option>${m}</option>`).join('')}</select></div>
+        <label class="full" style="display:flex;gap:10px;align-items:center;font-weight:600">
+          <input type="checkbox" id="bLog" checked style="width:18px;height:18px;flex:none"> Record it as an expense (${esc(catById(w.categoryId).name)})
+        </label>
+      </form>
+      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn btn-income" type="submit" form="boughtForm">✅ Mark as bought</button></div>`, (root) => {
+      $('#boughtForm', root).onsubmit = (e) => {
+        e.preventDefault();
+        const price = round3($('#bPrice', root).value);
+        if (!(price > 0)) return;
+        const date = $('#bDate', root).value || todayStr();
+        if ($('#bLog', root).checked) {
+          state.transactions.push({ id: uid(), type: 'expense', amount: price, categoryId: w.categoryId || 'shopping', date,
+            place: w.name, method: $('#bMethod', root).value, note: 'Planned purchase', createdAt: Date.now() });
+        }
+        Object.assign(w, { status: 'bought', boughtDate: date, boughtPrice: price });
+        save(); closeModal(); render(); toast('✅ Marked as bought');
+      };
+    });
+  }
+
   // ---------- Adjust one budget month ----------
   function openPeriodForm(key) {
     const nominal = nominalStart(key);
@@ -1109,6 +1531,15 @@
       { id: uid(), direction: 'owe', person: 'Ahmed', amount: 50, dueDate: due(-3), note: 'Dinner split', createdAt: Date.now(), payments: [] },
       { id: uid(), direction: 'owed', person: 'Sara', amount: 120, dueDate: due(14), note: 'Concert tickets', createdAt: Date.now(), payments: [{ id: uid(), amount: 40, date: due(-5) }] },
     ];
+    s.savings = [
+      { id: uid(), name: 'Emergency fund', icon: '🆘', color: '#a855f7', goal: 3000, createdAt: Date.now(), entries: [{ id: uid(), amount: 1200, date: due(-150), note: 'Opening balance' }, { id: uid(), amount: 150, date: due(-30), note: 'Monthly saving' }] },
+      { id: uid(), name: 'Travel', icon: '✈️', color: '#06b6d4', goal: 800, createdAt: Date.now(), entries: [{ id: uid(), amount: 320, date: due(-60), note: 'Opening balance' }] },
+    ];
+    s.wishlist = [
+      { id: uid(), name: 'New laptop', price: 450, priority: 'high', targetDate: due(40), categoryId: 'shopping', link: '', note: '', saved: 200, status: 'planned', createdAt: Date.now() },
+      { id: uid(), name: 'Gym membership', price: 120, priority: 'medium', targetDate: due(25), categoryId: 'health', link: '', note: '6 months', saved: 0, status: 'planned', createdAt: Date.now() },
+      { id: uid(), name: 'PS5', price: 210, priority: 'low', targetDate: '', categoryId: 'fun', link: '', note: '', saved: 0, status: 'planned', createdAt: Date.now() },
+    ];
     s.settings = state.settings;
     state = s; save(); render(); toast('✨ Demo data loaded');
   }
@@ -1124,10 +1555,16 @@
       case 'add-expense': openTxForm('expense'); break;
       case 'add-income': openTxForm('income'); break;
       case 'goto': ui.view = el.dataset.view; render(); window.scrollTo({ top: 0 }); break;
-      case 'edit-tx': { const t = state.transactions.find((x) => x.id === id); if (t) openTxForm(t.type, t); break; }
+      case 'edit-tx': {
+        const t = state.transactions.find((x) => x.id === id);
+        if (t && isTransfer(t)) { toast('🐷 Savings moves are edited in Savings'); if (showSavings()) { ui.view = 'savings'; render(); } break; }
+        if (t) openTxForm(t.type, t);
+        break;
+      }
       case 'del-tx': confirmBox('This transaction will be permanently deleted.', () => {
         state.transactions = state.transactions.filter((x) => x.id !== id);
         state.debts.forEach((d) => d.payments.forEach((p) => { if (p.txId === id) delete p.txId; }));
+        state.savings.forEach((a) => { a.entries = a.entries.filter((e) => e.txId !== id); });
         save(); render(); toast('🗑️ Deleted');
       }); break;
       case 'add-debt': openDebtForm(); break;
@@ -1148,6 +1585,59 @@
         break;
       }
       case 'add-cat': openCatForm(el.dataset.type); break;
+      case 'mask-savings':
+        ui.maskSavings = !ui.maskSavings;
+        try { localStorage.setItem(MASK_KEY, ui.maskSavings ? '1' : '0'); } catch { /* storage blocked */ }
+        render(); break;
+      case 'add-account': openAccountForm(); break;
+      case 'edit-account': { const a = state.savings.find((x) => x.id === id); if (a) openAccountForm(a); break; }
+      case 'save-in': case 'save-out': { const a = state.savings.find((x) => x.id === id); if (a) openEntryForm(a, action === 'save-in' ? 'in' : 'out'); break; }
+      case 'del-account': {
+        const a = state.savings.find((x) => x.id === id);
+        if (!a) break;
+        confirmBox(`Delete "${a.name}" and its history? Transactions already recorded stay.`, () => {
+          state.savings = state.savings.filter((x) => x !== a); save(); render(); toast('🗑️ Account deleted');
+        });
+        break;
+      }
+      case 'del-entry': {
+        const a = state.savings.find((x) => x.id === id);
+        const en = a?.entries.find((x) => x.id === el.dataset.eid);
+        if (!en) break;
+        confirmBox(`Remove this ${bhd(Math.abs(en.amount))} entry${en.txId ? ' and its linked transaction' : ''}?`, () => {
+          a.entries = a.entries.filter((x) => x !== en);
+          if (en.txId) state.transactions = state.transactions.filter((t) => t.id !== en.txId);
+          save(); render(); toast('🗑️ Entry removed');
+        }, 'Remove');
+        break;
+      }
+      case 'add-wish': openWishForm(); break;
+      case 'edit-wish': { const w = state.wishlist.find((x) => x.id === id); if (w) openWishForm(w); break; }
+      case 'wish-aside': { const w = state.wishlist.find((x) => x.id === id); if (w) openAsideForm(w); break; }
+      case 'wish-bought': { const w = state.wishlist.find((x) => x.id === id); if (w) openBoughtForm(w); break; }
+      case 'del-wish': confirmBox('Remove this item from your future purchases?', () => {
+        state.wishlist = state.wishlist.filter((x) => x.id !== id); save(); render(); toast('🗑️ Removed');
+      }, 'Remove'); break;
+      case 'plan-shift': ui.planOffset = Math.max(0, Math.min(6, ui.planOffset + Number(el.dataset.d))); render(); break;
+      case 'plan-income-prev': planFor(planKey()).income = sum(incomeIn(shiftMonth(planKey(), -1)), (t) => t.amount); save(); render(); break;
+      case 'plan-fill': {
+        const plan = planFor(planKey());
+        if (el.dataset.src === 'budgets') plan.byCategory = { ...state.budgets.byCategory };
+        else plan.byCategory = Object.fromEntries(spendByCategory(shiftMonth(planKey(), -1)).map((r) => [r.cat.id, r.total]));
+        save(); render(); toast('📋 Plan filled in, adjust as you like');
+        break;
+      }
+      case 'plan-clear': confirmBox('Clear everything in this month\'s plan?', () => { delete state.plans[planKey()]; save(); render(); }, 'Clear'); break;
+      case 'plan-apply': {
+        const plan = planFor(planKey());
+        const total = sum(Object.values(plan.byCategory));
+        confirmBox(`Your category budgets will be replaced by this plan, and the monthly budget set to ${bhd(total)}.`, () => {
+          state.budgets.byCategory = { ...plan.byCategory };
+          state.budgets.overall = total;
+          save(); render(); toast('🎯 Budgets updated from your plan');
+        }, 'Use plan');
+        break;
+      }
       case 'edit-cat': { const c = state.categories.find((x) => x.id === id); if (c) openCatForm(c.type, c); break; }
       case 'del-cat': {
         const c = state.categories.find((x) => x.id === id);
