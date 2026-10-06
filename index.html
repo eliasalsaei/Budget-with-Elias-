@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Budget with Elias</title>
+  <meta name="description" content="Colourful budgeting, spending and debt tracker in BHD.">
+  <meta name="theme-color" content="#7c3aed">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-logo">💸</span>
+        <div>
+          <div class="brand-name">Budget with Elias</div>
+          <div class="brand-sub">BHD money tracker</div>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-ico">🏠</span><span>Dashboard</span></button>
+        <button class="nav-item" data-view="transactions"><span class="nav-ico">🧾</span><span>Transactions</span></button>
+        <button class="nav-item" data-view="budgets"><span class="nav-ico">🎯</span><span>Budgets</span></button>
+        <button class="nav-item" data-view="debts"><span class="nav-ico">🤝</span><span>Debts</span></button>
+        <button class="nav-item" data-view="insights"><span class="nav-ico">📊</span><span>Insights</span></button>
+        <button class="nav-item" data-view="settings"><span class="nav-ico">⚙️</span><span>Settings</span></button>
+      </nav>
+      <div class="sidebar-actions">
+        <button class="btn btn-expense block" data-action="add-expense">➖ Add expense</button>
+        <button class="btn btn-income block" data-action="add-income">➕ Add income</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <h1 class="view-title" id="viewTitle">Dashboard</h1>
+        <div class="month-switch">
+          <button class="icon-btn" id="prevMonth" aria-label="Previous month">◀</button>
+          <button class="month-label" id="monthLabel" title="Go to current month">—</button>
+          <button class="icon-btn" id="nextMonth" aria-label="Next month">▶</button>
+        </div>
+      </header>
+      <section id="view" class="view"></section>
+    </main>
+  </div>
+
+  <button class="fab" data-action="add-expense" aria-label="Add transaction">＋</button>
+
+  <dialog id="modal" class="modal">
+    <div class="modal-inner" id="modalBody"></div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

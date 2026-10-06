@@ -1,0 +1,13 @@
+{
+  "name": "Budget with Elias",
+  "short_name": "Budget",
+  "description": "Colourful budgeting, spending and debt tracker in BHD.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f3ff",
+  "theme_color": "#7c3aed",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
