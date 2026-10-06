@@ -167,6 +167,8 @@ button { cursor: pointer; }
   display: grid; justify-items: center; gap: 4px; font-size: 12px; font-weight: 700; text-align: center;
 }
 .cat-chip .emoji { width: 36px; height: 36px; border-radius: 12px; display: grid; place-items: center; font-size: 18px; }
+.cat-chip.add-chip { border: 2px dashed var(--border); background: transparent; color: var(--primary); }
+.cat-chip.add-chip .emoji { background: var(--bg-2); font-weight: 800; }
 .cat-chip.active { border-color: var(--c); background: color-mix(in srgb, var(--c) 14%, var(--surface)); }
 
 /* ---------- Lists ---------- */

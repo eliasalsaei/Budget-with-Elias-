@@ -78,7 +78,9 @@
       transactions: [],
       budgets: { overall: 0, byCategory: {} },
       debts: [],
-      settings: { theme: 'auto' },
+      // cycleDay: the day each budget month starts (salary day). salaryStart: start on the actual
+      // salary date when it lands within a few days of cycleDay. cycleOverrides: { 'YYYY-MM': 'YYYY-MM-DD' }.
+      settings: { theme: 'auto', cycleDay: 25, salaryStart: true, cycleOverrides: {} },
     };
   }
 
@@ -119,16 +121,67 @@
     if (sync) window.BudgetSync?.push();
   }
 
+  // ---------- Budget months (pay cycle) ----------
+  // A budget month is named by the calendar month it starts in ('YYYY-MM'). With cycleDay 25,
+  // '2026-09' runs from 25 Sep to 24 Oct, unless the salary arrived a little earlier or later.
+  const SALARY_WINDOW = 4; // days either side of cycleDay to look for the salary
+  const OVERRIDE_WINDOW = 10; // how far a manual start may move from cycleDay
+  const dateStr = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  const parseDate = (str) => { const [y, m, d] = str.split('-').map(Number); return new Date(y, m - 1, d); };
+  const addDays = (str, n) => { const d = parseDate(str); d.setDate(d.getDate() + n); return dateStr(d); };
+  const dayDiff = (a, b) => Math.round((parseDate(b) - parseDate(a)) / 86400000);
+  const cycleDay = () => Math.min(31, Math.max(1, Math.round(Number(state.settings.cycleDay)) || 1));
+  const nominalStart = (key) => `${key}-${pad(Math.min(cycleDay(), daysInMonth(key)))}`;
+
+  function salaryDateNear(key) {
+    const nominal = nominalStart(key);
+    const lo = addDays(nominal, -SALARY_WINDOW), hi = addDays(nominal, SALARY_WINDOW);
+    const salaryIds = new Set(state.categories.filter((c) => c.type === 'income' && (c.id === 'salary' || /salary|راتب/i.test(c.name))).map((c) => c.id));
+    return state.transactions
+      .filter((t) => t.type === 'income' && salaryIds.has(t.categoryId) && t.date >= lo && t.date <= hi)
+      .map((t) => t.date).sort()[0] || null;
+  }
+  function periodStart(key) {
+    const manual = state.settings.cycleOverrides?.[key];
+    if (manual) return manual;
+    if (cycleDay() > 1 && state.settings.salaryStart !== false) {
+      const paid = salaryDateNear(key);
+      if (paid) return paid;
+    }
+    return nominalStart(key);
+  }
+  const periodEnd = (key) => addDays(periodStart(shiftMonth(key, 1)), -1);
+  const periodDays = (key) => Math.max(1, dayDiff(periodStart(key), periodEnd(key)) + 1);
+  function periodKeyOf(date) {
+    const key = date.slice(0, 7);
+    if (date < periodStart(key)) return shiftMonth(key, -1);
+    if (date >= periodStart(shiftMonth(key, 1))) return shiftMonth(key, 1);
+    return key;
+  }
+  const currentPeriod = () => periodKeyOf(todayStr());
+  const daysElapsed = (key) => (key === currentPeriod() ? dayDiff(periodStart(key), todayStr()) + 1 : periodDays(key));
+  const isCalendarMonth = (key) => periodStart(key) === `${key}-01` && periodEnd(key) === `${key}-${pad(daysInMonth(key))}`;
+  function periodLabel(key, short = false) {
+    if (isCalendarMonth(key)) return monthName(key, short ? { month: 'short' } : undefined);
+    const start = periodStart(key), end = periodEnd(key);
+    if (short) return fmtDate(start, { day: 'numeric', month: 'short' });
+    const sameYear = start.slice(0, 4) === end.slice(0, 4);
+    return `${fmtDate(start, sameYear ? { day: 'numeric', month: 'short' } : undefined)} – ${fmtDate(end)}`;
+  }
+
   const ui = {
     view: 'dashboard',
-    month: monthKey(new Date()),
+    month: currentPeriod(),
     txFilter: { type: 'all', category: '', method: '', q: '' },
     debtTab: 'owe',
   };
 
   const catById = (id) => state.categories.find((c) => c.id === id) || { id, name: 'Uncategorised', icon: '❔', color: '#94a3b8', type: 'expense' };
   const catsOf = (type) => state.categories.filter((c) => c.type === type);
-  const txInMonth = (key = ui.month) => state.transactions.filter((t) => t.date && t.date.startsWith(key));
+  const txInMonth = (key = ui.month) => {
+    const start = periodStart(key), end = periodEnd(key);
+    return state.transactions.filter((t) => t.date && t.date >= start && t.date <= end);
+  };
   const expensesIn = (key) => txInMonth(key).filter((t) => t.type === 'expense');
   const incomeIn = (key) => txInMonth(key).filter((t) => t.type === 'income');
   const debtPaid = (d) => sum(d.payments || [], (p) => p.amount);
@@ -286,9 +339,11 @@
     const balance = round3(earned - spent);
     const overall = state.budgets.overall;
     const byCat = spendByCategory(ui.month);
-    const days = daysInMonth(ui.month);
+    const days = periodDays(ui.month);
+    const start = periodStart(ui.month);
     const daily = Array(days).fill(0);
-    exp.forEach((t) => { daily[Number(t.date.slice(8, 10)) - 1] += t.amount; });
+    exp.forEach((t) => { const i = dayDiff(start, t.date); if (i >= 0 && i < days) daily[i] += t.amount; });
+    const dayLabels = daily.map((_, i) => String(Number(addDays(start, i).slice(8, 10))));
 
     const iOwe = sum(state.debts.filter((d) => d.direction === 'owe'), debtLeft);
     const owedMe = sum(state.debts.filter((d) => d.direction === 'owed'), debtLeft);
@@ -328,8 +383,8 @@
           ${donut(byCat, spent, 'Spent')}
         </div>
         <div class="card">
-          <div class="card-head"><h3 class="card-title">📅 Daily spending</h3><span class="card-sub">${monthName(ui.month)}</span></div>
-          ${spent > 0 ? barChart(daily.map((_, i) => String(i + 1)), [{ label: 'Spent', values: daily, color: '#ec4899' }], { labelEvery: days > 20 ? 5 : 1 }) : empty('📅', 'Daily bars will appear once you add expenses.')}
+          <div class="card-head"><h3 class="card-title">📅 Daily spending</h3><span class="card-sub">${periodLabel(ui.month)}</span></div>
+          ${spent > 0 ? barChart(dayLabels, [{ label: 'Spent', values: daily, color: '#ec4899' }], { labelEvery: days > 20 ? 5 : 1 }) : empty('📅', 'Daily bars will appear once you add expenses.')}
         </div>
       </div>
 
@@ -398,7 +453,7 @@
           const dayTotal = sum(items.filter((t) => t.type === 'expense'), (t) => t.amount);
           return `<div class="day-group"><div class="day-head"><span>${dayHeading(date)}</span><span>${dayTotal ? `−${bhd(dayTotal)}` : ''}</span></div>
             <div class="tx-list">${items.map((t) => txRow(t)).join('')}</div></div>`;
-        }).join('') : empty('🔍', all.length ? 'No transactions match these filters.' : `No transactions in ${monthName(ui.month)} yet.`)}
+        }).join('') : empty('🔍', all.length ? 'No transactions match these filters.' : `No transactions in ${periodLabel(ui.month)} yet.`)}
       </div>`;
   }
 
@@ -408,9 +463,8 @@
     const overall = state.budgets.overall;
     const pct = overall > 0 ? (spent / overall) * 100 : 0;
     const totalCatLimits = sum(Object.values(state.budgets.byCategory));
-    const days = daysInMonth(ui.month);
-    const isCurrent = ui.month === monthKey(new Date());
-    const daysLeft = isCurrent ? days - new Date().getDate() + 1 : 0;
+    const isCurrent = ui.month === currentPeriod();
+    const daysLeft = isCurrent ? periodDays(ui.month) - daysElapsed(ui.month) + 1 : 0;
 
     return `
       <div class="grid grid-3">
@@ -421,8 +475,9 @@
               <div class="amount-input"><span>BHD</span><input class="input" id="overallBudget" type="number" min="0" step="0.001" inputmode="decimal" value="${overall || ''}" placeholder="0.000"></div>
             </div>
             <div class="kv">
-              <div class="kv-row"><span>Spent in ${monthName(ui.month, { month: 'long' })}</span><b>${bhd(spent)}</b></div>
+              <div class="kv-row"><span>Spent this month</span><b>${bhd(spent)}</b></div>
               <div class="kv-row"><span>${overall && spent > overall ? 'Over by' : 'Remaining'}</span><b style="color:${overall && spent > overall ? 'var(--expense)' : 'var(--income)'}">${overall ? bhd(Math.abs(overall - spent)) : '—'}</b></div>
+              ${isCurrent ? `<div class="kv-row"><span>Days left until next salary</span><b>${daysLeft}</b></div>` : ''}
               ${isCurrent && overall > spent ? `<div class="kv-row"><span>Safe to spend per day</span><b>${bhd((overall - spent) / daysLeft)}</b></div>` : ''}
             </div>
           </div>
@@ -441,7 +496,7 @@
       </div>
 
       <div class="card">
-        <div class="card-head"><h3 class="card-title">🗂️ Category budgets — ${monthName(ui.month)}</h3></div>
+        <div class="card-head"><h3 class="card-title">🗂️ Category budgets — ${periodLabel(ui.month)}</h3><button class="btn btn-sm btn-expense" data-action="add-cat" data-type="expense">＋ New category</button></div>
         ${catsOf('expense').map((c) => {
           const s = byCat.get(c.id) || 0;
           const lim = Number(state.budgets.byCategory[c.id]) || 0;
@@ -550,8 +605,7 @@
     const trendInc = months.map((k) => sum(incomeIn(k), (t) => t.amount));
     const trendExp = months.map((k) => sum(expensesIn(k), (t) => t.amount));
 
-    const isCurrent = ui.month === monthKey(new Date());
-    const daysCounted = isCurrent ? new Date().getDate() : daysInMonth(ui.month);
+    const daysCounted = daysElapsed(ui.month);
     const biggest = exp.slice().sort((a, b) => b.amount - a.amount)[0];
     const change = prevSpent ? ((spent - prevSpent) / prevSpent) * 100 : null;
     const topCat = byCat[0];
@@ -577,8 +631,8 @@
 
       <div class="grid grid-2">
         <div class="card">
-          <div class="card-head"><h3 class="card-title">📊 Income vs spending — last 6 months</h3></div>
-          ${barChart(months.map((k) => monthName(k, { month: 'short' })), [
+          <div class="card-head"><h3 class="card-title">📊 Income vs spending — last 6 budget months</h3></div>
+          ${barChart(months.map((k) => periodLabel(k, true)), [
             { label: 'Income', values: trendInc, color: '#10b981' },
             { label: 'Spending', values: trendExp, color: '#f43f5e' },
           ], { height: 200 })}
@@ -602,8 +656,25 @@
         <button class="link-btn" data-action="edit-cat" data-id="${c.id}" title="Edit">✏️</button>
         <button class="link-btn" data-action="del-cat" data-id="${c.id}" title="Delete">🗑️</button>
       </div>`;
+    const cur = currentPeriod();
+    const startWhy = state.settings.cycleOverrides?.[cur] ? 'set by you'
+      : (cycleDay() > 1 && state.settings.salaryStart !== false && salaryDateNear(cur)) ? 'started on your salary day' : `day ${cycleDay()}`;
     return `
       ${syncCard()}
+      <div class="card">
+        <div class="card-head"><h3 class="card-title">📅 Budget month</h3><span class="pill">Now: ${esc(periodLabel(cur))}</span></div>
+        <p class="card-sub" style="margin-top:0">Start each month on the day your salary arrives, so budgets and totals match your pay cycle.</p>
+        <div class="form-grid" style="align-items:center">
+          <div class="field"><label for="cycleDay">My month starts on day</label>
+            <select class="input" id="cycleDay">${Array.from({ length: 31 }, (_, i) => i + 1).map((d) => `<option value="${d}" ${d === cycleDay() ? 'selected' : ''}>${d === 1 ? '1 (normal calendar month)' : d}</option>`).join('')}</select>
+          </div>
+          <label style="display:flex;gap:10px;align-items:center;font-weight:600">
+            <input type="checkbox" id="salaryStart" ${state.settings.salaryStart !== false ? 'checked' : ''} ${cycleDay() === 1 ? 'disabled' : ''} style="width:18px;height:18px;flex:none">
+            Start on the day my salary actually arrives (if it comes up to ${SALARY_WINDOW} days early or late)
+          </label>
+        </div>
+        <p class="card-sub" style="margin-bottom:0">Current month: <b>${esc(periodLabel(cur))}</b> (${startWhy}). You can also change any single month with the ✏️ button next to the month at the top.</p>
+      </div>
       <div class="card">
         <div class="card-head"><h3 class="card-title">🗂️ Expense categories</h3><button class="btn btn-sm btn-expense" data-action="add-cat" data-type="expense">＋ Add</button></div>
         <div class="cat-manage">${catsOf('expense').map(catItem).join('')}</div>
@@ -692,7 +763,7 @@
 
   function render() {
     $('#viewTitle').textContent = VIEW_TITLES[ui.view];
-    $('#monthLabel').textContent = monthName(ui.month);
+    $('#monthLabel').textContent = periodLabel(ui.month);
     $('.month-switch').style.visibility = ui.view === 'settings' || ui.view === 'debts' ? 'hidden' : 'visible';
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === ui.view));
     renderSyncBadge();
@@ -730,6 +801,8 @@
     if (ui.view === 'settings') {
       $$('[data-theme-set]', v).forEach((b) => b.onclick = () => { state.settings.theme = b.dataset.themeSet; save(); applyTheme(); render(); });
       $('#importFile', v).onchange = importJson;
+      $('#cycleDay', v).onchange = (e) => { state.settings.cycleDay = Number(e.target.value); save(); ui.month = currentPeriod(); render(); toast('📅 Budget month updated'); };
+      $('#salaryStart', v).onchange = (e) => { state.settings.salaryStart = e.target.checked; save(); ui.month = currentPeriod(); render(); };
     }
   }
 
@@ -756,6 +829,7 @@
               <button type="button" class="cat-chip ${c.id === t.categoryId ? 'active' : ''}" data-cat="${c.id}" style="--c:${c.color}">
                 <span class="emoji" style="background:color-mix(in srgb, ${c.color} 20%, transparent)">${esc(c.icon)}</span>${esc(c.name)}
               </button>`).join('')}
+              <button type="button" class="cat-chip add-chip" data-newcat><span class="emoji">＋</span>New category</button>
             </div>
           </div>
           <div class="field"><label for="fDate">Date</label><input class="input" id="fDate" type="date" value="${t.date}" required></div>
@@ -777,6 +851,10 @@
           t.method = $('#fMethod', root).value; t.place = $('#fPlace', root).value; t.note = $('#fNote', root).value;
         };
         $$('#fType button', root).forEach((b) => b.onclick = () => { capture(); t.type = b.dataset.type; draw(); });
+        $('[data-newcat]', root).onclick = () => {
+          capture();
+          openCatForm(t.type, null, (cat) => { if (cat) t.categoryId = cat.id; draw(); });
+        };
         $$('[data-cat]', root).forEach((b) => b.onclick = () => {
           t.categoryId = b.dataset.cat;
           $$('[data-cat]', root).forEach((x) => x.classList.toggle('active', x === b));
@@ -794,7 +872,7 @@
           if (existing) state.transactions = state.transactions.map((x) => (x.id === rec.id ? rec : x));
           else state.transactions.push(rec);
           save(); closeModal();
-          if (!rec.date.startsWith(ui.month)) ui.month = rec.date.slice(0, 7);
+          ui.month = periodKeyOf(rec.date);
           render();
           toast(existing ? '✅ Updated' : rec.type === 'expense' ? `💸 Expense of ${bhd(amount)} saved` : `💰 Income of ${bhd(amount)} saved`);
         };
@@ -888,8 +966,43 @@
     });
   }
 
+  // ---------- Adjust one budget month ----------
+  function openPeriodForm(key) {
+    const nominal = nominalStart(key);
+    const manual = state.settings.cycleOverrides?.[key];
+    const paid = cycleDay() > 1 && state.settings.salaryStart !== false ? salaryDateNear(key) : null;
+    const auto = paid || nominal;
+    openModal(`
+      <div class="modal-head"><h2>Adjust this month</h2><button class="icon-btn" data-close aria-label="Close">✕</button></div>
+      <p style="margin:0;color:var(--muted)">Right now this month runs <b style="color:var(--text)">${esc(periodLabel(key))}</b>.
+        ${manual ? 'You set this start date yourself.' : paid ? 'It starts on the day your salary was recorded.' : `It starts on day ${cycleDay()}, as set in Settings.`}</p>
+      <form id="periodForm" class="grid" style="gap:12px">
+        <div class="field"><label for="pStart">This month starts on</label>
+          <input class="input" id="pStart" type="date" required value="${periodStart(key)}" min="${addDays(nominal, -OVERRIDE_WINDOW)}" max="${addDays(nominal, OVERRIDE_WINDOW)}">
+        </div>
+        <p class="card-sub" style="margin:0">The previous month will end the day before. Automatic start: ${fmtDate(auto)}.</p>
+      </form>
+      <div class="modal-foot">
+        ${manual ? '<button class="btn" id="pAuto">↺ Use automatic</button>' : '<button class="btn" data-close>Cancel</button>'}
+        <button class="btn btn-primary" type="submit" form="periodForm">💾 Save</button>
+      </div>`, (root) => {
+      const done = (msg) => { save(); closeModal(); ui.month = periodKeyOf(periodStart(key)); render(); toast(msg); };
+      $('#pAuto', root)?.addEventListener('click', () => { delete state.settings.cycleOverrides[key]; done('↺ Back to automatic'); });
+      $('#periodForm', root).onsubmit = (e) => {
+        e.preventDefault();
+        const v = $('#pStart', root).value;
+        if (!v) return;
+        state.settings.cycleOverrides = state.settings.cycleOverrides || {};
+        if (v === auto) delete state.settings.cycleOverrides[key];
+        else state.settings.cycleOverrides[key] = v;
+        done('📅 Month start updated');
+      };
+    });
+  }
+
   // ---------- Category form ----------
-  function openCatForm(type, existing = null) {
+  // onDone(category | null) is used when the form is opened from inside another form.
+  function openCatForm(type, existing = null, onDone = null) {
     const c = existing ? { ...existing } : { name: '', icon: type === 'income' ? '💰' : '🏷️', color: PALETTE[state.categories.length % PALETTE.length], type };
     const emojis = ['🍔', '☕', '🛒', '⛽', '🚕', '🛍️', '👕', '💡', '💧', '📶', '🏠', '💊', '🏋️', '🎬', '🎮', '📚', '✈️', '🎁', '👶', '🐱', '💇', '🚗', '🔧', '🕌', '❤️', '📱', '💳', '💼', '💻', '🎉', '💰', '📈', '🏷️', '📦'];
     openModal(`
@@ -904,7 +1017,8 @@
           <div class="swatches">${PALETTE.map((p) => `<button type="button" class="swatch ${p === c.color ? 'active' : ''}" data-color="${p}" style="--c:${p}" aria-label="${p}"></button>`).join('')}</div>
         </div>
       </form>
-      <div class="modal-foot"><button class="btn" data-close>Cancel</button><button class="btn btn-primary" type="submit" form="catForm">💾 Save</button></div>`, (root) => {
+      <div class="modal-foot"><button class="btn" ${onDone ? 'id="catBack"' : 'data-close'}>${onDone ? '← Back' : 'Cancel'}</button><button class="btn btn-primary" type="submit" form="catForm">💾 Save</button></div>`, (root) => {
+      if (onDone) $('#catBack', root).onclick = () => onDone(null);
       $$('[data-emoji]', root).forEach((b) => b.onclick = () => { $('#cIcon', root).value = b.dataset.emoji; });
       $$('[data-color]', root).forEach((b) => b.onclick = () => { c.color = b.dataset.color; $$('[data-color]', root).forEach((x) => x.classList.toggle('active', x === b)); });
       $('#catForm', root).onsubmit = (e) => {
@@ -914,7 +1028,8 @@
         const rec = { id: existing?.id || uid(), name, icon: $('#cIcon', root).value.trim() || '🏷️', color: c.color, type: c.type };
         if (existing) state.categories = state.categories.map((x) => (x.id === rec.id ? rec : x));
         else state.categories.push(rec);
-        save(); closeModal(); render(); toast('🗂️ Category saved');
+        save(); render(); toast(`🗂️ Category "${rec.name}" saved`);
+        if (onDone) onDone(rec); else closeModal();
       };
     });
   }
@@ -1072,7 +1187,8 @@
 
   $('#prevMonth').onclick = () => { ui.month = shiftMonth(ui.month, -1); render(); };
   $('#nextMonth').onclick = () => { ui.month = shiftMonth(ui.month, 1); render(); };
-  $('#monthLabel').onclick = () => { ui.month = monthKey(new Date()); render(); };
+  $('#monthLabel').onclick = () => { ui.month = currentPeriod(); render(); };
+  $('#editPeriod').onclick = () => openPeriodForm(ui.month);
 
   // Keep in sync if the app is open in two tabs
   window.addEventListener('storage', (e) => { if (e.key === STORAGE_KEY) { state = loadState(); applyTheme(); render(); } });

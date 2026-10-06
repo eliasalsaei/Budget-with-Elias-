@@ -8,6 +8,8 @@ A colourful, easy budgeting app for tracking **spending, income, budgets and deb
 - **Budgets**: an overall monthly limit plus a limit per category, with green, amber and red progress bars and a "safe to spend per day" figure.
 - **Debts**: "I owe" and "Owed to me" tabs, partial payments with history, due dates and overdue badges. A payment can also be logged as a transaction automatically.
 - **Insights**: spending by category, top places, payment methods, day of the week, 6-month income vs spending, daily average, biggest expense and change vs last month.
+- **Pay-cycle months**: each budget month starts on your salary day (default the 25th). If the salary arrives a few days early or late (e.g. the 24th), the month starts on that day automatically. Any single month can be adjusted with the ✏️ button next to the month.
+- **Categories**: add your own straight from the add-expense form (＋ New category), from Budgets, or from Settings.
 - **Settings**: add, edit or delete categories (emoji + colour), light/dark/auto theme, JSON backup and restore, CSV export (opens in Excel), demo data, and erase all data.
 - Works on phone and desktop, can be installed to the home screen, and works offline.
 
