@@ -1,5 +1,5 @@
 // Offline support: cache the app shell, serve it when there is no network.
-const CACHE = 'budget-elias-v5';
+const CACHE = 'budget-elias-v6';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.json', 'icon.svg', 'sync.js', 'sync-core.js', 'firebase-config.js'];
 
 self.addEventListener('install', (e) => {

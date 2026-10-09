@@ -1,6 +1,6 @@
 # 💸 Budget with Elias
 
-A colourful, easy budgeting app for tracking **spending, income, budgets and debts** in **Bahraini Dinar (BHD)**.
+A clean, easy budgeting app for tracking **spending, income, budgets and debts** in **Bahraini Dinar (BHD)**.
 
 ## Features
 - **Dashboard**: this month's balance, income, spending and budget left, a "where your money went" donut, daily spending chart, alerts (over budget, overdue debts), recent transactions and a debts snapshot.
